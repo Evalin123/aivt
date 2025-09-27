@@ -1,4 +1,10 @@
 import tkinter as tk
+import warnings
+import os
+
+# 抑制 macOS 系統警告
+os.environ['PYTHONWARNINGS'] = 'ignore'
+warnings.filterwarnings('ignore')
 
 """
 ## Documentation
@@ -27,6 +33,9 @@ import mss
 import pygame
 
 import argparse
+import json
+import websockets
+import threading
 
 import edge_tts
 from google import genai
@@ -91,8 +100,12 @@ chat_contents = [{"text": character_prompt}] if character_prompt else []
 pygame.mixer.init()
 
 async def speak_text(text):
-    """使用 edge-tts 生成並播放語音"""
+    """使用 edge-tts 生成並播放語音到 VB-CABLE，並觸發 VTS 動作"""
     try:
+        # 觸發 VTS 開始說話動作
+        if vts_api.connection_status and vts_api.authenticated:
+            await vts_api.start_speaking()
+        
         # 創建臨時檔案
         with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_file:
             temp_path = temp_file.name
@@ -101,13 +114,12 @@ async def speak_text(text):
         communicate = edge_tts.Communicate(text, "zh-CN-XiaoxiaoNeural")
         await communicate.save(temp_path)
         
-        # 使用 pygame 播放
-        pygame.mixer.music.load(temp_path)
-        pygame.mixer.music.play()
+        # 使用 pygame 播放到 VB-CABLE
+        await play_to_vbcable_pygame(temp_path)
         
-        # 等待播放完成
-        while pygame.mixer.music.get_busy():
-            await asyncio.sleep(0.1)
+        # 觸發 VTS 停止說話動作
+        if vts_api.connection_status and vts_api.authenticated:
+            await vts_api.stop_speaking()
         
         # 清理臨時檔案
         os.unlink(temp_path)
@@ -120,6 +132,180 @@ async def speak_text(text):
                 os.unlink(temp_path)
         except:
             pass
+
+async def play_to_vbcable_pygame(audio_file):
+    """使用 pygame 播放音頻到系統預設設備（推薦的 Mac/pygame 邏輯）"""
+    try:
+        # 1. 忽略設備名稱，使用系統預設設定
+        pygame.mixer.quit() 
+        pygame.mixer.init()  # 使用最簡單的初始化，它會使用 macOS 當前的預設輸出裝置
+        print("成功初始化 pygame mixer，聲音將輸出到 macOS 預設播放設備。")
+        
+        # 2. 播放音頻
+        pygame.mixer.music.load(audio_file)
+        pygame.mixer.music.play()
+        
+        # 3. 等待播放完成
+        while pygame.mixer.music.get_busy():
+            await asyncio.sleep(0.1)
+            
+    except pygame.error as e:
+        print(f"初始化 pygame 失敗: {e}")
+        return
+    except Exception as e:
+        print(f"音頻播放錯誤: {e}")
+
+
+class VTSAPI:
+    """VTube Studio API 連接類別"""
+    
+    def __init__(self, host="localhost", port=8001):
+        self.host = host
+        self.port = port
+        self.websocket = None
+        self.authenticated = False
+        self.api_token = None
+        self.connection_status = False
+        
+    async def connect(self):
+        """連接到 VTS API"""
+        try:
+            uri = f"ws://{self.host}:{self.port}"
+            self.websocket = await websockets.connect(uri)
+            self.connection_status = True
+            print(f"已連接到 VTS API: {uri}")
+            
+            # 開始監聽訊息
+            await self.listen_for_messages()
+            
+        except Exception as e:
+            print(f"VTS API 連接失敗: {e}")
+            self.connection_status = False
+    
+    async def authenticate(self):
+        """VTS API 認證"""
+        try:
+            # 發送認證請求
+            auth_request = {
+                "apiName": "VTubeStudioPublicAPI",
+                "apiVersion": "1.0",
+                "requestID": "auth_request",
+                "messageType": "AuthenticationRequest",
+                "data": {
+                    "pluginName": "AI Chat Assistant",
+                    "pluginDeveloper": "AI Assistant",
+                    "pluginIcon": ""
+                }
+            }
+            
+            print(f"發送認證請求: {json.dumps(auth_request, indent=2)}")
+            await self.websocket.send(json.dumps(auth_request))
+            print("已發送 VTS 認證請求")
+            
+        except Exception as e:
+            print(f"VTS 認證失敗: {e}")
+    
+    async def listen_for_messages(self):
+        """監聽 VTS API 訊息"""
+        try:
+            async for message in self.websocket:
+                data = json.loads(message)
+                await self.handle_message(data)
+        except websockets.exceptions.ConnectionClosed:
+            print("VTS API 連接已關閉")
+            self.connection_status = False
+        except Exception as e:
+            print(f"VTS 訊息監聽錯誤: {e}")
+    
+    async def handle_message(self, data):
+        """處理 VTS API 訊息"""
+        print(f"收到 VTS 訊息: {json.dumps(data, indent=2)}")
+        
+        message_type = data.get("messageType", "")
+        
+        if message_type == "AuthenticationResponse":
+            if data.get("data", {}).get("authenticated"):
+                self.authenticated = True
+                self.api_token = data.get("data", {}).get("authenticationToken")
+                print("VTS API 認證成功！")
+            else:
+                print("VTS API 認證失敗")
+                print(f"失敗原因: {data.get('data', {}).get('reason', '未知')}")
+        
+        elif message_type == "APIStateResponse":
+            print("VTS API 狀態更新")
+        
+        else:
+            print(f"收到其他訊息類型: {message_type}")
+    
+    async def trigger_expression(self, expression_name="Happy"):
+        """觸發表情"""
+        if not self.authenticated:
+            print("VTS API 未認證，無法觸發表情")
+            return
+        
+        try:
+            request = {
+                "apiName": "VTubeStudioPublicAPI",
+                "apiVersion": "1.0",
+                "requestID": f"expression_{expression_name}",
+                "messageType": "ExpressionActivationRequest",
+                "data": {
+                    "expressionFile": expression_name,
+                    "active": True
+                }
+            }
+            
+            await self.websocket.send(json.dumps(request))
+            print(f"已觸發表情: {expression_name}")
+            
+        except Exception as e:
+            print(f"觸發表情失敗: {e}")
+    
+    async def trigger_hotkey(self, hotkey_name="Speaking"):
+        """觸發熱鍵"""
+        if not self.authenticated:
+            print("VTS API 未認證，無法觸發熱鍵")
+            return
+        
+        try:
+            request = {
+                "apiName": "VTubeStudioPublicAPI",
+                "apiVersion": "1.0",
+                "requestID": f"hotkey_{hotkey_name}",
+                "messageType": "HotkeyTriggerRequest",
+                "data": {
+                    "hotkeyID": hotkey_name
+                }
+            }
+            
+            print(f"發送熱鍵請求: {json.dumps(request, indent=2)}")
+            await self.websocket.send(json.dumps(request))
+            print(f"已觸發熱鍵: {hotkey_name}")
+            
+        except Exception as e:
+            print(f"觸發熱鍵失敗: {e}")
+    
+    async def start_speaking(self):
+        """開始說話動作"""
+        await self.trigger_hotkey("Speaking")
+        await self.trigger_expression("Happy")
+    
+    async def stop_speaking(self):
+        """停止說話動作"""
+        await self.trigger_hotkey("Idle")
+        await self.trigger_expression("Neutral")
+    
+    async def disconnect(self):
+        """斷開連接"""
+        if self.websocket:
+            await self.websocket.close()
+            self.connection_status = False
+            print("已斷開 VTS API 連接")
+
+
+# 初始化 VTS API
+vts_api = VTSAPI()
 
 
 class AudioLoop:
@@ -362,6 +548,21 @@ if __name__ == "__main__":
 
         send_button = tk.Button(root, text="發送", command=send_message)
         send_button.pack(side=tk.RIGHT, padx=10, pady=10)
+        
+        # 初始化 VTS API 連接
+        async def init_vts():
+            try:
+                print("正在嘗試連接 VTS API...")
+                await vts_api.connect()
+                print("VTS API 連接成功，正在認證...")
+                await vts_api.authenticate()
+                print("VTS API 認證完成")
+            except Exception as e:
+                print(f"VTS API 初始化失敗: {e}")
+                print("請確認 VTube Studio 正在運行且已開啟 API 功能")
+        
+        # 在背景線程中初始化 VTS
+        threading.Thread(target=lambda: asyncio.run(init_vts()), daemon=True).start()
 
         root.mainloop()
     else:
