@@ -27,16 +27,16 @@ import mss
 import pygame
 
 import argparse
+import threading
+from dotenv import load_dotenv
 
 import edge_tts
 from google import genai
 from google.genai import types
 
-FORMAT = pyaudio.paInt16
-CHANNELS = 1
-SEND_SAMPLE_RATE = 16000
-RECEIVE_SAMPLE_RATE = 24000
-CHUNK_SIZE = 1024
+# 載入環境變量
+load_dotenv()
+
 
 MODEL = "models/gemini-2.5-flash-native-audio-preview-09-2025"
 
@@ -44,7 +44,7 @@ DEFAULT_MODE = "chat"
 
 client = genai.Client(
     http_options={"api_version": "v1beta"},
-    api_key="AIzaSyDyR_FtUP_Eh_BtsThtHrUNHAyeM8mmlfY",
+    api_key=os.getenv("GEMINI_API_KEY"),
 )
 
 
