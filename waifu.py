@@ -4,18 +4,27 @@ import asyncio
 import tempfile
 import threading
 import pygame
-import edge_tts
 from google import genai
+
+from dotenv import load_dotenv
+from elevenlabs.client import ElevenLabs
+
 
 
 class WaifuChat:
     """AI 對話和語音播放管理類別"""
     
     def __init__(self, vts_api=None):
+        load_dotenv()
         self.vts_api = vts_api
         self.client = genai.Client(
             http_options={"api_version": "v1beta"},
             api_key="AIzaSyBn_Ah21Byc_-1wgNYuZ2tGAfhhYakhSVA",
+        )
+        
+        # 初始化 ElevenLabs 客戶端
+        self.elevenlabs = ElevenLabs(
+            api_key=os.getenv("ELEVENLABS_API_KEY"),
         )
         
         # 讀取角色設定檔案
@@ -38,7 +47,7 @@ class WaifuChat:
                         self.character_prompt += file.read() + "\n"
     
     async def speak_text(self, text):
-        """使用 edge-tts 生成並播放語音到 VB-CABLE，並觸發 VTS 動作"""
+        """使用 ElevenLabs 生成並播放語音到 VB-CABLE，並觸發 VTS 動作"""
         try:
             # 觸發 VTS 開始說話動作
             if self.vts_api and self.vts_api.connection_status and self.vts_api.authenticated:
@@ -48,9 +57,18 @@ class WaifuChat:
             with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_file:
                 temp_path = temp_file.name
             
-            # 使用 edge-tts 生成語音（中文女聲）
-            communicate = edge_tts.Communicate(text, "zh-CN-XiaoxiaoNeural")
-            await communicate.save(temp_path)
+            # 使用 ElevenLabs 生成語音
+            audio = self.elevenlabs.text_to_speech.convert(
+                text=text,
+                voice_id="cgSgspJ2msm6clMCkdW9",
+                model_id="eleven_multilingual_v2",
+                output_format="mp3_44100_128",
+            )
+            
+            # 將音頻數據寫入臨時檔案
+            with open(temp_path, 'wb') as f:
+                for chunk in audio:
+                    f.write(chunk)
             
             # 使用 pygame 播放到 VB-CABLE
             await self.play_to_vbcable_pygame(temp_path)
