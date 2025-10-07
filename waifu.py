@@ -47,11 +47,11 @@ class WaifuChat:
                         self.character_prompt += file.read() + "\n"
     
     async def speak_text(self, text):
-        """使用 ElevenLabs 生成並播放語音到 VB-CABLE，並觸發 VTS 動作"""
+        """使用 ElevenLabs 生成並播放語音到 VB-CABLE，並控制嘴形"""
         try:
-            # 觸發 VTS 開始說話動作
+            # 開始說話 - 張開嘴巴
             if self.vts_api and self.vts_api.connection_status and self.vts_api.authenticated:
-                await self.vts_api.start_speaking()
+                await self.vts_api.inject_params([['MouthOpen', 1.0]])
             
             # 創建臨時檔案
             with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_file:
@@ -73,9 +73,9 @@ class WaifuChat:
             # 使用 pygame 播放到 VB-CABLE
             await self.play_to_vbcable_pygame(temp_path)
             
-            # 觸發 VTS 停止說話動作
+            # 停止說話 - 閉上嘴巴
             if self.vts_api and self.vts_api.connection_status and self.vts_api.authenticated:
-                await self.vts_api.stop_speaking()
+                await self.vts_api.inject_params([['MouthOpen', 0.0]])
             
             # 清理臨時檔案
             os.unlink(temp_path)
